@@ -178,6 +178,8 @@ textarea.dump{width:100%;height:180px;border:1px solid var(--line);border-radius
 .savebar .tx2{flex:1;font-size:14px;line-height:1.3}
 .savebar .tx2 span{opacity:.7;display:block;font-size:13px}
 .savebar button{border:0;border-radius:12px;padding:11px 14px;font-weight:600;background:var(--on-press);color:var(--press)}
+.btn.danger{color:#D0533F}
+.notice a{color:inherit;text-decoration:underline}
 .notice{background:var(--surface);border-radius:var(--r-md);padding:12px 14px;font-size:14px;color:var(--soft);margin-top:14px;line-height:1.45}
 
 /* нижний лист */
@@ -666,6 +668,8 @@ function renderSettings(v){
      <button class="btn quiet" id="compact" ${old&&!S.compactOnSave?"":"disabled"}>${S.compactOnSave?"Сожмётся при сохранении":"Сжать старые операции"}</button></section>
    <section><div class="sh"><h2>Данные</h2></div>
      <button class="btn quiet" id="csv">Скачать CSV</button><button class="btn quiet" id="backup">Скачать копию finance.txt</button><button class="btn quiet" id="raw">Показать файл</button><div id="rawBox"></div>
+     <button class="btn quiet danger" id="wipe">Очистить статистику</button>
+     <p class="note">Удаляет все траты, итоги и советы. Категории, валюта и бюджет остаются. Прошлая версия файла сохранится на iPhone как finance-backup.txt.</p>
      <p class="note">Данные приходят из шортката в адресе страницы после знака #. Эта часть адреса не отправляется на сервер.</p></section>`;
   const on=(s,e,f)=>v.querySelector(s).addEventListener(e,f);
   on("#cur","change",e=>{S.settings.cur=clean(e.target.value)||"₸";markDirty()});
@@ -678,6 +682,8 @@ function renderSettings(v){
     for(const a of S.agg) rows.push([a.date.toLocaleDateString("ru-RU"),"",fmtAmt(a.sum),catById(a.cat).name,"итог дня, "+a.cnt]);
     download("finance.csv","﻿"+rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(";")).join("\n"),"text/csv")});
   on("#backup","click",()=>download("finance.txt",serialize(false),"text/plain"));
+  on("#wipe","click",()=>confirmSheet("Очистить всю статистику?",`Удалятся ${S.tx.filter(t=>!t.deleted).length} операций и ${S.agg.length} итогов дней. Категории останутся. После этого нажми «Сохранить на iPhone».`,"Очистить",()=>{
+    for(const t of S.tx) t.deleted=true; S.agg=[]; S.advice=null; S.compactOnSave=false; markDirty()}));
   on("#raw","click",()=>{v.querySelector("#rawBox").innerHTML=`<textarea class="dump" readonly aria-label="Содержимое файла">${esc(serialize(S.compactOnSave))}</textarea>`});
 }
 function download(n,t,type){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([t],{type}));a.download=n;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500)}
@@ -694,7 +700,7 @@ function confirmSheet(title,text,action,fn){
 function notice(t){document.getElementById("notice").innerHTML=t?`<div class="notice">${t}</div>`:""}
 
 /* ===== сохранение ===== */
-function markDirty(){S.dirty=true; if(S.demo) notice("Это демо, поэтому изменения никуда не сохранятся. Открой сайт из шортката, чтобы работать со своими данными."); render()}
+function markDirty(){S.dirty=true; if(S.demo) notice("Страница открыта без данных из шортката, поэтому изменения никуда не сохранятся. Открой «Статистику» в шорткате."); render()}
 async function saveToPhone(){
   const txt=serialize(S.compactOnSave); let ok=false;
   try{await navigator.clipboard.writeText(txt);ok=true}catch(e){}
@@ -740,14 +746,28 @@ view.addEventListener("touchstart",e=>{t0=e.target.closest("svg,input,.chips")?n
 view.addEventListener("touchend",e=>{if(!t0||S.tab==="cats"||S.tab==="settings")return;const dx=e.changedTouches[0].clientX-t0[0],dy=e.changedTouches[0].clientY-t0[1];if(Math.abs(dx)>70&&Math.abs(dy)<40)shift(dx<0?1:-1);t0=null},{passive:true});
 window.addEventListener("beforeunload",e=>{if(S.dirty&&!S.demo){e.preventDefault();e.returnValue=""}});
 
-(async function init(){
-  let text=null,err=null; try{text=await decodeHash()}catch(e){err=e}
-  if(!text){S.demo=true;text=demoText()}
-  Object.assign(S,parseFile(text));
+function emptyText(){return demoText().split("\n").filter(l=>l==="FIN1"||/^[sc]\|/.test(l)).map(l=>l.startsWith("s|budget|")?"s|budget|0":l).join("\n")}
+function loadData(text){
+  Object.assign(S,parseFile(text)); S.dirty=false; S.off=new Set();
   const last=S.tx.length?S.tx[S.tx.length-1].date:new Date(); S.anchor=new Date();
   if(S.tx.length&&range("month",S.anchor).from>last) S.anchor=last;
-  if(err) notice(`Не получилось прочитать данные из ссылки (${esc(err.message||err)}). Пока показаны демо-данные: открой статистику из шортката ещё раз.`);
-  else if(S.demo) notice(`Это демо со случайными тратами. Свои данные появятся, когда откроешь статистику из шортката «${esc(shortcutName())}».`);
+}
+function showExample(){S.example=true; loadData(demoText());
+  notice(`<b>Пример со случайными тратами.</b> Это не твои данные. <a href="#" id="hideEx">Убрать пример</a>`);
+  document.getElementById("hideEx").onclick=e=>{e.preventDefault();S.example=false;loadData(emptyText());emptyNotice();render()}; render()}
+function emptyNotice(){
+  notice(`<b>Здесь пока нет твоих данных.</b> Сайт ничего не хранит сам: траты приходят из шортката. Открой шорткат «${esc(shortcutName())}» → «Статистика», и страница откроется уже с ними. <a href="#" id="showEx">Показать пример</a>`);
+  document.getElementById("showEx").onclick=e=>{e.preventDefault();showExample()};
+}
+/* Safari не перезагружает страницу, если меняется только часть после # */
+window.addEventListener("hashchange",()=>location.reload());
+(async function init(){
+  let text=null,err=null; try{text=await decodeHash()}catch(e){err=e}
+  if(!text){S.demo=true;text=emptyText()}
+  loadData(text);
+  if(err) notice(`Не получилось прочитать данные из ссылки (${esc(err.message||err)}). Открой «Статистику» из шортката ещё раз.`);
+  else if(S.demo) emptyNotice();
+  else { const n=S.tx.length; notice(n?"":`Данные с телефона получены, но трат пока нет. Запиши первую через шорткат.`); }
   render();
 })();
 </script>
